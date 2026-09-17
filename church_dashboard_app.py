@@ -300,7 +300,14 @@ if raw is None:
 st.sidebar.success(f"Dataset: {loaded_source}")
 
 df = calculate_scores(raw)
-
+def _find_column(frame, aliases):
+    """Find an exact column match only; never use substring matching."""
+    normalized = {str(c).strip().lower(): c for c in frame.columns}
+    for alias in aliases:
+        key = str(alias).strip().lower()
+        if key in normalized:
+            return normalized[key]
+    return None
 def _church_name_column(frame):
     """Return a genuine church/community name column if the dataset provides one."""
     return _find_column(
