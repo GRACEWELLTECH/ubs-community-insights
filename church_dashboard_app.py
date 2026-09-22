@@ -1,17 +1,72 @@
 import streamlit as st
-import pandas as pd
-import re
 
 # ============================================================
-# PAGE CONFIG
+# PAGE CONFIGURATION
 # ============================================================
 
 st.set_page_config(
     page_title="Question Number Dashboard",
-    page_icon="📊",
+    page_icon="📋",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# ============================================================
+# QUESTION NUMBER AND CATEGORY MAPPING
+# ============================================================
+
+QUESTION_CATEGORIES = {
+    "Q7": "Personal & Emotional",
+    "Q8": "Personal & Emotional",
+    "Q9": "Personal & Emotional",
+    "Q10": "Personal & Emotional",
+    "Q11": "Personal & Emotional",
+
+    "Q12": "Family & Relationships",
+    "Q13": "Family & Relationships",
+    "Q14": "Family & Relationships",
+    "Q15": "Family & Relationships",
+    "Q16": "Family & Relationships",
+
+    "Q17": "Employment & Career",
+    "Q18": "Employment & Career",
+    "Q19": "Employment & Career",
+    "Q20": "Employment & Career",
+    "Q21": "Employment & Career",
+
+    "Q22": "Financial Wellbeing",
+    "Q23": "Financial Wellbeing",
+    "Q24": "Financial Wellbeing",
+    "Q25": "Financial Wellbeing",
+
+    "Q26": "Physical Health & Wellbeing",
+    "Q27": "Physical Health & Wellbeing",
+    "Q28": "Physical Health & Wellbeing",
+
+    "Q29": "Emotional Wellbeing & Support",
+    "Q30": "Emotional Wellbeing & Support",
+    "Q31": "Emotional Wellbeing & Support",
+
+    "Q32": "Community & Social Connection",
+    "Q33": "Community & Social Connection",
+    "Q34": "Community & Social Connection",
+
+    "Q35": "Spiritual Growth",
+    "Q36": "Spiritual Growth",
+    "Q37": "Spiritual Growth",
+    "Q38": "Spiritual Growth",
+    "Q39": "Spiritual Growth",
+
+    "Q40": "Priorities",
+    "Q41": "Open Text",
+    "Q42": "Open Text"
+}
+
+# ============================================================
+# QUESTION LIST
+# ============================================================
+
+QUESTION_NUMBERS = list(QUESTION_CATEGORIES.keys())
 
 # ============================================================
 # CUSTOM CSS
@@ -19,33 +74,22 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    .main-title {
-        font-size: 32px;
-        font-weight: 700;
-        margin-bottom: 5px;
-    }
+.question-box {
+    padding: 12px 18px;
+    margin: 6px 0;
+    border: 1px solid #dddddd;
+    border-radius: 8px;
+    font-size: 18px;
+    font-weight: 600;
+}
 
-    .sub-title {
-        font-size: 16px;
-        color: #666;
-        margin-bottom: 25px;
-    }
-
-    .question-box {
-        padding: 12px 18px;
-        border-radius: 8px;
-        border: 1px solid #ddd;
-        margin-bottom: 8px;
-        font-size: 18px;
-        font-weight: 600;
-    }
-
-    .metric-box {
-        padding: 15px;
-        border-radius: 10px;
-        border: 1px solid #ddd;
-        text-align: center;
-    }
+.category-box {
+    padding: 12px 18px;
+    margin: 6px 0;
+    border: 1px solid #dddddd;
+    border-radius: 8px;
+    font-size: 16px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -53,14 +97,11 @@ st.markdown("""
 # HEADER
 # ============================================================
 
-st.markdown(
-    '<div class="main-title">📊 Question Number Dashboard</div>',
-    unsafe_allow_html=True
-)
+st.title("📋 Question Number Dashboard")
 
-st.markdown(
-    '<div class="sub-title">Display and explore question numbers from your Excel dataset</div>',
-    unsafe_allow_html=True
+st.caption(
+    "Question categories are stored internally. "
+    "Only question numbers are displayed."
 )
 
 # ============================================================
@@ -69,265 +110,163 @@ st.markdown(
 
 st.sidebar.header("⚙️ Controls")
 
-uploaded_file = st.sidebar.file_uploader(
-    "Upload Excel File",
-    type=["xlsx", "xls"]
+search_text = st.sidebar.text_input(
+    "Search Question Number",
+    placeholder="Example: Q31"
+)
+
+show_categories = st.sidebar.checkbox(
+    "Show category information",
+    value=False
 )
 
 # ============================================================
-# HELPER FUNCTION
+# CATEGORY FILTER
 # ============================================================
 
-def extract_question_number(value):
-    """
-    Extract question numbers such as:
-    Q1
-    Q12
-    Q31
-    Q100
-    """
+all_categories = [
+    "All Categories"
+] + list(dict.fromkeys(QUESTION_CATEGORIES.values()))
 
-    if pd.isna(value):
-        return None
-
-    text = str(value).strip()
-
-    match = re.search(
-        r"\bQ\s*(\d+)\b",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    if match:
-        return f"Q{match.group(1)}"
-
-    return None
-
-
-def question_sort_key(question):
-    """
-    Sort Q1, Q2, Q10, Q31 correctly.
-    """
-
-    match = re.search(r"\d+", question)
-
-    if match:
-        return int(match.group())
-
-    return 999999
-
+selected_category = st.sidebar.selectbox(
+    "Filter by Category",
+    all_categories
+)
 
 # ============================================================
-# MAIN APPLICATION
+# FILTER QUESTIONS
 # ============================================================
 
-if uploaded_file is None:
+filtered_questions = QUESTION_NUMBERS.copy()
 
-    st.info(
-        "👈 Please upload your Excel file from the sidebar."
-    )
+if search_text:
 
-    st.markdown("### Expected question format")
-
-    example_questions = [
-        "Q1",
-        "Q2",
-        "Q12",
-        "Q14",
-        "Q31",
-        "Q32",
-        "Q33",
-        "Q34",
-        "Q35",
-        "Q36",
-        "Q37"
+    filtered_questions = [
+        question
+        for question in filtered_questions
+        if search_text.strip().upper() in question
     ]
 
-    for q in example_questions:
+if selected_category != "All Categories":
 
+    filtered_questions = [
+        question
+        for question in filtered_questions
+        if QUESTION_CATEGORIES[question] == selected_category
+    ]
+
+# ============================================================
+# SUMMARY METRICS
+# ============================================================
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.metric(
+        "Total Questions",
+        len(QUESTION_NUMBERS)
+    )
+
+with col2:
+    st.metric(
+        "Displayed Questions",
+        len(filtered_questions)
+    )
+
+with col3:
+    st.metric(
+        "Categories",
+        len(set(QUESTION_CATEGORIES.values()))
+    )
+
+st.divider()
+
+# ============================================================
+# DISPLAY QUESTIONS
+# ============================================================
+
+st.subheader("Available Questions")
+
+if filtered_questions:
+
+    for question in filtered_questions:
+
+        # Display only question number by default
         st.markdown(
-            f'<div class="question-box">{q}</div>',
+            f"""
+            <div class="question-box">
+                {question}
+            </div>
+            """,
             unsafe_allow_html=True
+        )
+
+        # Category is shown only if checkbox is enabled
+        if show_categories:
+
+            st.caption(
+                f"Category: {QUESTION_CATEGORIES[question]}"
+            )
+
+else:
+
+    st.warning(
+        "No matching question numbers found."
+    )
+
+# ============================================================
+# QUESTION SELECTION
+# ============================================================
+
+st.divider()
+
+st.subheader("Select a Question")
+
+if filtered_questions:
+
+    selected_question = st.selectbox(
+        "Question Number",
+        options=filtered_questions
+    )
+
+    st.success(
+        f"Selected Question: {selected_question}"
+    )
+
+    # Category remains available internally
+    selected_category_value = QUESTION_CATEGORIES[
+        selected_question
+    ]
+
+    if show_categories:
+
+        st.info(
+            f"Category: {selected_category_value}"
         )
 
 else:
 
-    # ========================================================
-    # READ EXCEL
-    # ========================================================
+    st.info("No question available for selection.")
 
-    try:
+# ============================================================
+# CATEGORY SUMMARY
+# ============================================================
 
-        df = pd.read_excel(uploaded_file)
+st.divider()
 
-    except Exception as e:
+st.subheader("Category Summary")
 
-        st.error(
-            f"❌ Unable to read the Excel file.\n\n{e}"
-        )
+category_summary = {}
 
-        st.stop()
+for category in QUESTION_CATEGORIES.values():
 
-    # ========================================================
-    # BASIC DATA INFORMATION
-    # ========================================================
-
-    st.success("✅ Excel file loaded successfully")
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.metric(
-            "Rows",
-            len(df)
-        )
-
-    with col2:
-        st.metric(
-            "Columns",
-            len(df.columns)
-        )
-
-    with col3:
-        st.metric(
-            "File",
-            uploaded_file.name
-        )
-
-    st.divider()
-
-    # ========================================================
-    # FIND QUESTION NUMBERS
-    # ========================================================
-
-    question_numbers = set()
-
-    # --------------------------------------------------------
-    # CHECK COLUMN NAMES
-    # --------------------------------------------------------
-
-    for column in df.columns:
-
-        question = extract_question_number(column)
-
-        if question:
-            question_numbers.add(question)
-
-    # --------------------------------------------------------
-    # CHECK CELL VALUES
-    # --------------------------------------------------------
-
-    for column in df.columns:
-
-        for value in df[column].dropna():
-
-            question = extract_question_number(value)
-
-            if question:
-                question_numbers.add(question)
-
-    # ========================================================
-    # SORT QUESTIONS
-    # ========================================================
-
-    question_numbers = sorted(
-        question_numbers,
-        key=question_sort_key
+    category_summary[category] = (
+        category_summary.get(category, 0) + 1
     )
 
-    # ========================================================
-    # DISPLAY QUESTION COUNT
-    # ========================================================
+for category, count in category_summary.items():
 
-    st.subheader("📋 Questions")
-
-    st.write(
-        f"**Total Questions Found: {len(question_numbers)}**"
-    )
-
-    # ========================================================
-    # SEARCH QUESTION
-    # ========================================================
-
-    search_text = st.text_input(
-        "🔎 Search Question Number",
-        placeholder="Example: Q31"
-    )
-
-    if search_text:
-
-        search_text = search_text.strip().upper()
-
-        filtered_questions = [
-            q for q in question_numbers
-            if search_text in q
-        ]
-
-    else:
-
-        filtered_questions = question_numbers
-
-    # ========================================================
-    # DISPLAY ONLY QUESTION NUMBERS
-    # ========================================================
-
-    if filtered_questions:
-
-        for question in filtered_questions:
-
-            st.markdown(
-                f'<div class="question-box">{question}</div>',
-                unsafe_allow_html=True
-            )
-
-    else:
-
-        st.warning(
-            "No matching question numbers found."
-        )
-
-    # ========================================================
-    # DOWNLOAD QUESTION NUMBERS
-    # ========================================================
-
-    if question_numbers:
-
-        question_df = pd.DataFrame(
-            {
-                "Question Number": question_numbers
-            }
-        )
-
-        csv_data = question_df.to_csv(
-            index=False
-        )
-
-        st.divider()
-
-        st.download_button(
-            label="⬇️ Download Question Numbers",
-            data=csv_data,
-            file_name="question_numbers.csv",
-            mime="text/csv"
-        )
-
-    # ========================================================
-    # OPTIONAL: SHOW ORIGINAL DATA
-    # ========================================================
-
-    st.divider()
-
-    show_data = st.checkbox(
-        "Show original Excel data"
-    )
-
-    if show_data:
-
-        st.dataframe(
-            df,
-            use_container_width=True,
-            height=500
-        )
+    st.write(f"**{category}:** {count} questions")
 
 # ============================================================
 # FOOTER
@@ -336,5 +275,5 @@ else:
 st.divider()
 
 st.caption(
-    "Question Number Dashboard | Gracewell Technologies"
+    "Gracewell Technologies"
 )
