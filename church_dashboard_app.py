@@ -300,6 +300,9 @@ if raw is None:
 st.sidebar.success(f"Dataset: {loaded_source}")
 
 df = calculate_scores(raw)
+
+# Exact column matching helper. Defined before church/community display helpers
+# because the sidebar uses those helpers during application startup.
 def _find_column(frame, aliases):
     """Find an exact column match only; never use substring matching."""
     normalized = {str(c).strip().lower(): c for c in frame.columns}
@@ -308,6 +311,8 @@ def _find_column(frame, aliases):
         if key in normalized:
             return normalized[key]
     return None
+
+
 def _church_name_column(frame):
     """Return a genuine church/community name column if the dataset provides one."""
     return _find_column(
@@ -735,16 +740,6 @@ def show_group_row_export(frame, group_cols, selected_values, key,
 # -----------------------------
 # Church Pattern Worksheet — Answer Engine
 # -----------------------------
-def _find_column(frame, aliases):
-    """Find an exact column match only; never use substring matching."""
-    normalized = {str(c).strip().lower(): c for c in frame.columns}
-    for alias in aliases:
-        key = str(alias).strip().lower()
-        if key in normalized:
-            return normalized[key]
-    return None
-
-
 def _issue_question_rows(frame, issue, top_n=3):
     """Return the survey questions that provide the clearest evidence for an issue."""
     rows = []
@@ -916,28 +911,37 @@ def _strongest_group(frame, issue, threshold=50):
     ).reset_index(drop=True)
 
 
-def _location_summary(frame):
-    rows = []
-    for label, aliases in [
-        ("Country", ["Country"]),
-        ("Region / State", ["Region", "State", "Region / State"]),
-        ("District / Local Area",
-         ["District", "Local_Area", "Local Area", "District / Local Area"]),
-        ("Church / Community", ["Community_ID", "Church_ID", "Church / Community"]),
-    ]:
-        col = _find_column(frame, aliases)
-        if col:
-            vals = frame[col].dropna().astype(str).value_counts()
-            if not vals.empty:
-                rows.append({
-                    "Level": label,
-                    "Most represented": vals.index[0],
-                    "People": int(vals.iloc[0]),
-                    "%": round(vals.iloc[0] / len(frame) * 100, 1),
-                })
-            else:
-                rows.append({"Level": label, "Most represented": "Not available",
-                             "People": 0, "%": 0.0})
+def _location_summary(frame, issues, threshold=50, min_n=5):
+    """Step 4: where does the pattern occur? Drill down Region -> Country ->
+    District -> Community, ranking each level by % of people meeting the pattern."""
+    parts = [i for i in issues if i in frame.columns]
+    if frame.empty or not parts:
+        return pd.DataFrame()
+    hit = frame[parts].ge(threshold).all(axis=1)
+    base = hit.mean() * 100
+    levels = [("Region / State", "Region"), ("Country", "Country"),
+              ("District / Local Area", "District"), ("Church / Community", "Community_ID")]
+    rows, scope = [], frame.index
+    for label, col in levels:
+        if col not in frame.columns:
+            continue
+        sub = pd.DataFrame({"loc": frame.loc[scope, col].astype(str), "hit": hit.loc[scope]})
+        sub = sub[frame.loc[scope, col].notna()]
+        g = sub.groupby("loc")["hit"].agg(People="sum", Respondents="size")
+        g = g[g["Respondents"] >= min_n]
+        if g.empty:
+            rows.append({"Level": label, "Location": f"Too few respondents (<{min_n})",
+                         "People with pattern": 0, "Respondents": 0,
+                         "% in location": 0.0, "Overall %": round(base, 1)})
+            break
+        g["pct"] = g["People"] / g["Respondents"] * 100
+        best = g.sort_values(["pct", "People"], ascending=False).iloc[0]
+        rows.append({"Level": label, "Location": best.name,
+                     "People with pattern": int(best["People"]),
+                     "Respondents": int(best["Respondents"]),
+                     "% in location": round(best["pct"], 1),
+                     "Overall %": round(base, 1)})
+        scope = sub.index[sub["loc"] == best.name]
     return pd.DataFrame(rows)
 
 
@@ -1983,20 +1987,21 @@ with tabs[10]:
 
         # STEP 4 — Where does it occur?
         st.markdown("### STEP 4 — Where does it occur?")
-        loc = _location_summary(worksheet)
+        pattern_issues = (
+            [p.strip() for p in combo_text.split(" + ")] if combo_text else [top_issue]
+        )
+        st.caption(f"Pattern: {' + '.join(pattern_issues)} (score ≥ {issue_threshold})")
+        loc = _location_summary(worksheet, pattern_issues, threshold=issue_threshold)
         if loc.empty:
             st.info("No geographic metadata is available.")
         else:
             st.dataframe(loc, use_container_width=True, hide_index=True)
-
-            # Visual: location concentration
             fig_loc = px.bar(
-                loc,
-                x="Level",
-                y="People",
-                text_auto=True,
-                title="Respondent Concentration by Location Level"
+                loc, x="Level", y="% in location", text_auto=".1f",
+                hover_data=["Location", "People with pattern", "Respondents"],
+                title="Where the pattern is most concentrated"
             )
+            fig_loc.update_yaxes(range=[0, 100])
             st.plotly_chart(fig_loc, use_container_width=True)
 
         # STEP 5 — Which survey questions explain it?
