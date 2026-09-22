@@ -13,15 +13,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Community Insights Dashboard", page_icon="📊", layout="wide")
 
-# Global brand header — visible on every dashboard tab/page.
-_logo = Path(__file__).resolve().parent / "gracewell_technologies_logo.png"
-if _logo.exists():
-    h1, h2 = st.columns([1, 5])
-    with h1:
-        st.image(str(_logo), width=150)
-    with h2:
-        st.markdown("### Scripture-Guided Community Insights")
-        st.caption("Powered by Gracewell Technologies")
+# Top logo/header removed as requested.
 
 st.title("📊 Community Insights & Pattern Discovery Dashboard")
 st.caption("Excel → Measurement → Pattern Discovery → Segmentation → Individual Profiles")
@@ -866,8 +858,28 @@ def _text_themes(frame, column, top_n=5):
     ).head(top_n)
 
 
-def _strongest_group(frame, issue, threshold=50):
-    """Find the strongest available demographic/context group for the issue."""
+def _strongest_group(frame, issues, threshold=50, min_n=2):
+    """Step 3: identify who experiences the selected Step 2 pattern.
+
+    A respondent is counted only when every issue in ``issues`` meets the
+    threshold. Each demographic/context group is then ranked by the share of
+    its members meeting that same pattern.
+    """
+    if isinstance(issues, str):
+        issues = [issues]
+    issues = [i for i in issues if i in frame.columns]
+
+    empty_columns = [
+        "Dimension", "Group", "People", "Group Size",
+        "% of Group", "Mean Pattern Score"
+    ]
+    if frame.empty or not issues:
+        return pd.DataFrame(columns=empty_columns)
+
+    # This is the exact pattern selected in Step 2.
+    pattern_hit = frame[issues].ge(threshold).all(axis=1)
+    pattern_score = frame[issues].mean(axis=1)
+
     candidates = [
         ("Age Group", ["Age Group", "Q1"]),
         ("Life Stage", ["Life Stage", "Q2"]),
@@ -878,19 +890,29 @@ def _strongest_group(frame, issue, threshold=50):
          ["Spiritual Stage", "Spiritual_Stage", "SpiritualStage"]),
         ("Urban / Rural", ["Urban_Rural", "Urban/Rural", "Urban Rural"]),
     ]
+
     results = []
     for label, aliases in candidates:
         col = _find_column(frame, aliases)
         if not col:
             continue
-        work = frame[[col, issue]].dropna(subset=[col])
-        if work.empty:
+
+        valid = frame[col].notna() & frame[col].astype(str).str.strip().ne("")
+        if not valid.any():
             continue
-        for value, group in work.groupby(col, dropna=True):
+
+        work = pd.DataFrame({
+            "group_value": frame.loc[valid, col].astype(str),
+            "pattern_hit": pattern_hit.loc[valid],
+            "pattern_score": pattern_score.loc[valid],
+        })
+
+        for value, group in work.groupby("group_value", dropna=True):
             n = len(group)
-            if n < 2:
+            if n < min_n:
                 continue
-            count = int(group[issue].ge(threshold).sum())
+
+            count = int(group["pattern_hit"].sum())
             pct = count / n * 100
             results.append({
                 "Dimension": label,
@@ -898,13 +920,13 @@ def _strongest_group(frame, issue, threshold=50):
                 "People": count,
                 "Group Size": n,
                 "% of Group": round(pct, 1),
-                "Mean Issue Score": round(float(group[issue].mean()), 1),
+                "Mean Pattern Score": round(float(group["pattern_score"].mean()), 1),
             })
+
     if not results:
-        return pd.DataFrame(
-            columns=["Dimension", "Group", "People", "Group Size",
-                     "% of Group", "Mean Issue Score"]
-        )
+        return pd.DataFrame(columns=empty_columns)
+
+    # Rank by concentration first, then absolute number of people.
     return pd.DataFrame(results).sort_values(
         ["% of Group", "People", "Group Size"],
         ascending=[False, False, False]
@@ -1843,9 +1865,21 @@ with tabs[10]:
             )
             st.plotly_chart(fig_combo, use_container_width=True)
 
+        # The selected Step 2 pattern is reused by Steps 3 and 4.
+        pattern_issues = (
+            [p.strip() for p in combo_text.split(" + ")]
+            if combo_text else [top_issue]
+        )
+
         # STEP 3 — Who experiences it?
         st.markdown(f"### STEP 3 — Who experiences it?  •  Threshold: {issue_threshold}")
-        group_results = _strongest_group(worksheet, top_issue, threshold=issue_threshold)
+        st.caption(
+            f"Pattern carried forward from Step 2: {' + '.join(pattern_issues)} "
+            f"(each issue score ≥ {issue_threshold})"
+        )
+        group_results = _strongest_group(
+            worksheet, pattern_issues, threshold=issue_threshold
+        )
         if group_results.empty:
             st.info("No usable demographic/context grouping columns were found.")
             strongest_group_text = "No group available"
@@ -1906,7 +1940,7 @@ with tabs[10]:
                 color="Dimension",
                 orientation="h",
                 text_auto=".1f",
-                title=f"Groups with Higher {top_issue} Scores"
+                title="Groups experiencing the selected Step 2 pattern"
             )
             fig_group.update_xaxes(range=[0, 100], title="% meeting threshold")
             st.plotly_chart(fig_group, use_container_width=True)
@@ -1987,9 +2021,6 @@ with tabs[10]:
 
         # STEP 4 — Where does it occur?
         st.markdown("### STEP 4 — Where does it occur?")
-        pattern_issues = (
-            [p.strip() for p in combo_text.split(" + ")] if combo_text else [top_issue]
-        )
         st.caption(f"Pattern: {' + '.join(pattern_issues)} (score ≥ {issue_threshold})")
         loc = _location_summary(worksheet, pattern_issues, threshold=issue_threshold)
         if loc.empty:
@@ -2004,11 +2035,15 @@ with tabs[10]:
             fig_loc.update_yaxes(range=[0, 100])
             st.plotly_chart(fig_loc, use_container_width=True)
 
-        # STEP 5 — Which survey questions explain it?
-        st.markdown("### STEP 5 — Which survey questions explain it?")
+        # STEP 5 — Which survey questions explain the selected Step 2 pattern?
+        st.markdown("### STEP 5 — Which survey questions explain the selected pattern?")
+        st.caption(
+            f"Underlying survey questions for the Step 2 pattern: "
+            f"{' + '.join(pattern_issues)}"
+        )
         question_frames = [
             _issue_question_rows(worksheet, issue, top_n=3)
-            for issue in top3_names
+            for issue in pattern_issues
         ]
         question_evidence = (
             pd.concat(question_frames, ignore_index=True)
