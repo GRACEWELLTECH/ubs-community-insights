@@ -1,4 +1,3 @@
-
 import streamlit as st
 from pathlib import Path
 import re
@@ -45,7 +44,7 @@ ISSUES = [
 ISSUE_QS = {
     "Personal & Emotional": ["Q7", "Q8", "Q9", "Q10", "Q11"],
     "Family & Marriage": ["Q12R", "Q13", "Q14R", "Q15", "Q16"],
-    "Employment & Career": ["Q17", "Q18", "Q19", "Q20"],
+    "Employment & Career": ["Q17", "Q18", "Q19", "Q20", "Q21"],
     "Financial & Economic": ["Q22", "Q23", "Q24"],
     "Physical Health & Healthcare": ["Q26", "Q27", "Q28"],
     "Emotional Wellbeing & Support": ["Q29", "Q30", "Q31R"],
@@ -732,7 +731,7 @@ def show_group_row_export(frame, group_cols, selected_values, key,
 # -----------------------------
 # Church Pattern Worksheet — Answer Engine
 # -----------------------------
-def _issue_question_rows(frame, issue, top_n=3):
+def _issue_question_rows(frame, issue, top_n=None):
     """Return the survey questions that provide the clearest evidence for an issue."""
     rows = []
     for col in ISSUE_QS.get(issue, []):
@@ -761,10 +760,11 @@ def _issue_question_rows(frame, issue, top_n=3):
             columns=["Question", "Issue", "Mean (1–5)",
                      "Evidence Score (0–100)", "% Agree / Strongly Agree"]
         )
-    return pd.DataFrame(rows).sort_values(
+    result = pd.DataFrame(rows).sort_values(
         ["Evidence Score (0–100)", "% Agree / Strongly Agree"],
         ascending=False
-    ).head(top_n)
+    )
+    return result if top_n is None else result.head(top_n)
 
 
 _THEME_RULES = {
@@ -2064,22 +2064,6 @@ with tabs[10]:
             st.info("No geographic metadata is available.")
         else:
             st.dataframe(loc, use_container_width=True, hide_index=True)
-            fig_loc = px.bar(
-                loc,
-                x="% in location",
-                y="Location",
-                color="Level",
-                facet_row="Level",
-                orientation="h",
-                text="% in location",
-                hover_data=["Rank", "People with pattern", "Respondents", "Overall %"],
-                title="All locations ranked by pattern concentration",
-            )
-            fig_loc.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-            fig_loc.update_xaxes(range=[0, 100], title="% of respondents in location meeting the pattern")
-            fig_loc.update_yaxes(title="Location", categoryorder="total ascending")
-            fig_loc.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
-            st.plotly_chart(fig_loc, use_container_width=True)
 
         # STEP 5 — Which survey questions explain the selected Step 2 pattern?
         st.markdown("### STEP 5 — Which survey questions explain the selected pattern?")
@@ -2088,7 +2072,7 @@ with tabs[10]:
             f"{' + '.join(pattern_issues)}"
         )
         question_frames = [
-            _issue_question_rows(worksheet, issue, top_n=3)
+            _issue_question_rows(worksheet, issue, top_n=None)
             for issue in pattern_issues
         ]
         question_evidence = (
