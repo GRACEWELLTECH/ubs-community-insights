@@ -934,36 +934,62 @@ def _strongest_group(frame, issues, threshold=50, min_n=2):
 
 
 def _location_summary(frame, issues, threshold=50, min_n=5):
-    """Step 4: where does the pattern occur? Drill down Region -> Country ->
-    District -> Community, ranking each level by % of people meeting the pattern."""
+    """Step 4: show all geographic locations ranked by pattern concentration.
+
+    Each geographic level is calculated independently from the same selected
+    Step 2 pattern. Locations with fewer than ``min_n`` respondents are omitted.
+    Results are ranked within each level by percentage, then people count.
+    """
     parts = [i for i in issues if i in frame.columns]
     if frame.empty or not parts:
         return pd.DataFrame()
+
     hit = frame[parts].ge(threshold).all(axis=1)
     base = hit.mean() * 100
-    levels = [("Region / State", "Region"), ("Country", "Country"),
-              ("District / Local Area", "District"), ("Church / Community", "Community_ID")]
-    rows, scope = [], frame.index
+    levels = [
+        ("Region / State", "Region"),
+        ("Country", "Country"),
+        ("District / Local Area", "District"),
+        ("Church / Community", "Community_ID"),
+    ]
+
+    rows = []
     for label, col in levels:
         if col not in frame.columns:
             continue
-        sub = pd.DataFrame({"loc": frame.loc[scope, col].astype(str), "hit": hit.loc[scope]})
-        sub = sub[frame.loc[scope, col].notna()]
-        g = sub.groupby("loc")["hit"].agg(People="sum", Respondents="size")
-        g = g[g["Respondents"] >= min_n]
-        if g.empty:
-            rows.append({"Level": label, "Location": f"Too few respondents (<{min_n})",
-                         "People with pattern": 0, "Respondents": 0,
-                         "% in location": 0.0, "Overall %": round(base, 1)})
-            break
-        g["pct"] = g["People"] / g["Respondents"] * 100
-        best = g.sort_values(["pct", "People"], ascending=False).iloc[0]
-        rows.append({"Level": label, "Location": best.name,
-                     "People with pattern": int(best["People"]),
-                     "Respondents": int(best["Respondents"]),
-                     "% in location": round(best["pct"], 1),
-                     "Overall %": round(base, 1)})
-        scope = sub.index[sub["loc"] == best.name]
+
+        valid = frame[col].notna() & frame[col].astype(str).str.strip().ne("")
+        sub = pd.DataFrame({
+            "Location": frame.loc[valid, col].astype(str).str.strip(),
+            "Pattern Hit": hit.loc[valid],
+        })
+
+        grouped = sub.groupby("Location")["Pattern Hit"].agg(
+            **{"People with pattern": "sum", "Respondents": "size"}
+        )
+        grouped = grouped[grouped["Respondents"] >= min_n].copy()
+        if grouped.empty:
+            continue
+
+        grouped["% in location"] = (
+            grouped["People with pattern"] / grouped["Respondents"] * 100
+        )
+        grouped = grouped.sort_values(
+            ["% in location", "People with pattern", "Respondents"],
+            ascending=[False, False, False]
+        )
+
+        for rank, (location, values) in enumerate(grouped.iterrows(), start=1):
+            rows.append({
+                "Level": label,
+                "Rank": rank,
+                "Location": location,
+                "People with pattern": int(values["People with pattern"]),
+                "Respondents": int(values["Respondents"]),
+                "% in location": round(float(values["% in location"]), 1),
+                "Overall %": round(float(base), 1),
+            })
+
     return pd.DataFrame(rows)
 
 
@@ -1873,6 +1899,17 @@ with tabs[10]:
 
         # STEP 3 — Who experiences it?
         st.markdown(f"### STEP 3 — Who experiences it?  •  Threshold: {issue_threshold}")
+
+        # Count the same respondents identified by the Step 2 pattern.
+        # A respondent must meet the threshold for every issue in the pattern.
+        pattern_hit = worksheet[pattern_issues].ge(issue_threshold).all(axis=1)
+        pattern_count = int(pattern_hit.sum())
+
+        st.info(
+            f"Who among those {pattern_count} people identified in Step 2 "
+            "experiences the selected pattern? The breakdown below is by "
+            "age group, life stage, and urban/rural category."
+        )
         st.caption(
             f"Pattern carried forward from Step 2: {' + '.join(pattern_issues)} "
             f"(each issue score ≥ {issue_threshold})"
@@ -2028,11 +2065,20 @@ with tabs[10]:
         else:
             st.dataframe(loc, use_container_width=True, hide_index=True)
             fig_loc = px.bar(
-                loc, x="Level", y="% in location", text_auto=".1f",
-                hover_data=["Location", "People with pattern", "Respondents"],
-                title="Where the pattern is most concentrated"
+                loc,
+                x="% in location",
+                y="Location",
+                color="Level",
+                facet_row="Level",
+                orientation="h",
+                text="% in location",
+                hover_data=["Rank", "People with pattern", "Respondents", "Overall %"],
+                title="All locations ranked by pattern concentration",
             )
-            fig_loc.update_yaxes(range=[0, 100])
+            fig_loc.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+            fig_loc.update_xaxes(range=[0, 100], title="% of respondents in location meeting the pattern")
+            fig_loc.update_yaxes(title="Location", categoryorder="total ascending")
+            fig_loc.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
             st.plotly_chart(fig_loc, use_container_width=True)
 
         # STEP 5 — Which survey questions explain the selected Step 2 pattern?
