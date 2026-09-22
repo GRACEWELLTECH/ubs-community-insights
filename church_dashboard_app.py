@@ -258,15 +258,13 @@ def show_combination_analysis(frame, key_prefix, title_prefix="Selected group"):
 # -----------------------------
 # Data loading
 # -----------------------------
-MASTER_DATA_FILE = "Unified_Master_Community_Insights_Dataset_V4.xlsx"
 APP_DIR = Path(__file__).resolve().parent
 
 st.sidebar.subheader("📁 Data Source")
 uploaded_excel = st.sidebar.file_uploader(
     "Upload your Excel survey data",
     type=["xlsx", "xls"],
-    help="Excel must contain a sheet named 'Responses'. "
-         "If no file is uploaded, the bundled V4 master dataset is used."
+    help="Excel must contain a sheet named 'Responses'. No bundled or demo dataset is used."
 )
 
 def load_responses():
@@ -278,103 +276,31 @@ def load_responses():
             st.exception(exc)
             return None, None
 
-    master_path = APP_DIR / MASTER_DATA_FILE
-    if master_path.exists():
-        return pd.read_excel(master_path, sheet_name="Responses"), MASTER_DATA_FILE
-
-    for candidate in sorted(APP_DIR.glob("*.xlsx")):
-        try:
-            if "Responses" in pd.ExcelFile(candidate).sheet_names:
-                return pd.read_excel(candidate, sheet_name="Responses"), candidate.name
-        except Exception:
-            continue
+    # Deliberately do not load any bundled workbook or fallback file.
+    # This prevents demo values from appearing as if they were real responses.
     return None, None
 
 raw, loaded_source = load_responses()
 
 if raw is None:
-    st.error("No usable Excel workbook was found.")
-    st.info("Upload your Excel file from the sidebar or keep the bundled V4 workbook beside app.py.")
+    st.title("Unified Master Community Insights Dashboard")
+    st.warning("No survey data is loaded.")
+    st.info(
+        "Upload the real survey workbook from the sidebar to activate analytics. "
+        "No country, region, district, church, respondent count, chart, or insight "
+        "will be displayed until it is calculated from uploaded data."
+    )
+    st.markdown("### Data-dependent sections currently unavailable")
+    st.write("- Location concentration")
+    st.write("- Top issues and issue combinations")
+    st.write("- Demographic and life-stage comparisons")
+    st.write("- Individual profiles and exports")
+    st.write("- Pattern discovery and recommendations")
     st.stop()
 
 st.sidebar.success(f"Dataset: {loaded_source}")
 
 df = calculate_scores(raw)
-
-def _find_column(frame, aliases):
-    """Find an exact column match only; never use substring matching."""
-    normalized = {str(c).strip().lower(): c for c in frame.columns}
-    for alias in aliases:
-        key = str(alias).strip().lower()
-        if key in normalized:
-            return normalized[key]
-    return None
-
-
-def _church_name_column(frame):
-    """Return a genuine church/community name column if the dataset provides one."""
-    return _find_column(
-        frame,
-        [
-            "Church_Name", "Church Name", "ChurchName",
-            "Community_Name", "Community Name", "CommunityName",
-        ],
-    )
-
-
-def _church_display_name(frame, community_id):
-    """Human-readable church/community label without inventing a church name."""
-    if community_id == "All Communities":
-        return "All Communities"
-
-    name_col = _church_name_column(frame)
-    if name_col:
-        vals = (
-            frame.loc[
-                frame["Community_ID"].astype(str) == str(community_id),
-                name_col
-            ]
-            .dropna().astype(str).str.strip()
-        )
-        vals = [v for v in vals if v]
-        if vals:
-            return f"{vals[0]} ({community_id})"
-
-    # The current V4 dataset has Community_ID but Church_ID is blank in the
-    # supplied records. Use available location information only as a descriptor,
-    # never as a fabricated church name.
-    sub = frame[frame["Community_ID"].astype(str) == str(community_id)]
-    locations = []
-    for col in ["Church_ID", "Local_Area", "District"]:
-        if col in sub.columns:
-            vals = (
-                sub[col].dropna().astype(str).str.strip().replace("", np.nan)
-                .dropna().drop_duplicates().tolist()
-            )
-            if col == "Church_ID" and vals:
-                return f"Church ID {vals[0]} ({community_id})"
-            if col != "Church_ID":
-                locations.extend(vals)
-
-    locations = list(dict.fromkeys(locations))
-    if locations:
-        return f"Community {community_id} — {', '.join(locations[:3])}"
-    return f"Community {community_id} — church name not provided"
-
-
-def _issue_people_export(frame, issue, threshold, key):
-    """Export people meeting a selected issue threshold."""
-    if frame is None or frame.empty or issue not in frame.columns:
-        return
-    people = frame.loc[frame[issue].ge(threshold)].copy()
-    show_people_export(
-        people,
-        title=f"People with {issue} ≥ {threshold}",
-        key=key,
-        show_table=True,
-    )
-
-
 
 # -----------------------------
 # Sidebar filters
@@ -412,19 +338,12 @@ if "Community_ID" in df.columns:
     community_values = sorted(
         df["Community_ID"].dropna().astype(str).unique().tolist()
     )
-    community_options = ["All Communities"] + community_values
-    community_labels = {
-        cid: _church_display_name(df, cid) for cid in community_values
-    }
+    community_options = community_values if community_values else ["All Communities"]
     selected_community = st.sidebar.selectbox(
         "Church / Community",
         community_options,
         index=0,
-        format_func=lambda x: (
-            "All Communities — whole church/community population"
-            if x == "All Communities" else community_labels.get(x, x)
-        ),
-        help="Choose the whole church/community population or a specific community."
+        help="Select the church/community for the local Pattern Discovery analysis."
     )
     if selected_community != "All Communities":
         filtered = filtered[
@@ -432,16 +351,6 @@ if "Community_ID" in df.columns:
         ]
 else:
     selected_community = "All Communities"
-
-# Pattern / concern threshold used throughout the church analysis.
-issue_threshold = st.sidebar.slider(
-    "Issue Threshold",
-    min_value=0,
-    max_value=100,
-    value=50,
-    step=5,
-    help="Change the score threshold used for People ≥ threshold, issue combinations, pattern discovery and worksheet evidence."
-)
 
 st.sidebar.caption(
     f"Showing {len(filtered)} of {len(df)} respondents"
@@ -738,6 +647,20 @@ def show_group_row_export(frame, group_cols, selected_values, key,
 # -----------------------------
 # Church Pattern Worksheet — Answer Engine
 # -----------------------------
+def _find_column(frame, aliases):
+    """Find the first existing column matching a list of common aliases."""
+    normalized = {str(c).strip().lower(): c for c in frame.columns}
+    for alias in aliases:
+        if alias.lower() in normalized:
+            return normalized[alias.lower()]
+    # Fallback: normalized contains the alias.
+    for alias in aliases:
+        for norm, original in normalized.items():
+            if alias.lower() in norm:
+                return original
+    return None
+
+
 def _issue_question_rows(frame, issue, top_n=3):
     """Return the survey questions that provide the clearest evidence for an issue."""
     rows = []
@@ -872,6 +795,7 @@ def _strongest_group(frame, issue, threshold=50):
         ("Community Participation",
          ["Community Participation", "Community_Participation",
           "CommunityParticipation"]),
+        ("Persona", ["Persona"]),
         ("Spiritual Stage",
          ["Spiritual Stage", "Spiritual_Stage", "SpiritualStage"]),
         ("Urban / Rural", ["Urban_Rural", "Urban/Rural", "Urban Rural"]),
@@ -986,7 +910,7 @@ def render_footer():
 # Tabs
 # -----------------------------
 tabs = st.tabs([
-    "1. Main Dashboard",
+    "1. Overview",
     "2. Issue Analysis",
     "3. Relationships",
     "4. Problem Combinations",
@@ -1001,239 +925,32 @@ tabs = st.tabs([
     "13. Data"
 ])
 
-# 1 Main Dashboard
+# 1 Overview
 with tabs[0]:
-    st.subheader("🏠 Main Church / Community Dashboard")
-    st.caption(
-        "See the whole selected church/community at a glance, then drill down into "
-        "Issue × Issue, Age × Issue, Life Stage × Issue, patterns, questions and people."
-    )
+    st.subheader("What problems exist?")
 
-    scope_label = (
-        "All Communities — whole church/community population"
-        if selected_community == "All Communities"
-        else _church_display_name(df, selected_community)
-    )
-    st.info(f"**Current analysis scope:** {scope_label}")
-    st.caption(
-        f"Analysis threshold: **{issue_threshold}/100**. Change it in the sidebar "
-        "to see how the number and percentage of people meeting the threshold change."
-    )
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Respondents", len(filtered))
+    show_people_export(filtered, "People in current dashboard filters",
+                       "church_overview", show_table=False)
+    c2.metric("High/Very High Personal", f"{filtered['Personal & Emotional'].ge(50).mean()*100:.1f}%")
+    c3.metric("High/Very High Family", f"{filtered['Family & Marriage'].ge(50).mean()*100:.1f}%")
+    c4.metric("High/Very High Financial", f"{filtered['Financial & Economic'].ge(50).mean()*100:.1f}%")
 
-    # KPI row
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Respondents", len(filtered))
-    issue_means = filtered[ISSUES].mean()
-    k2.metric("Top Issue", str(issue_means.idxmax()) if issue_means.notna().any() else "N/A")
-    k3.metric(
-        "Top Issue Score",
-        f"{issue_means.max():.1f}" if issue_means.notna().any() else "N/A"
-    )
-    k4.metric(
-        "Issues ≥50",
-        f"{(filtered[ISSUES].ge(issue_threshold).sum(axis=1) > 0).mean()*100:.1f}%"
-        if len(filtered) else "0.0%"
-    )
-
-    # A. Issue profile
-    st.markdown("### 1️⃣ Issue Profile")
-    main_issue = pd.DataFrame({
+    prevalence = pd.DataFrame({
         "Issue": ISSUES,
         "Mean Score": [filtered[c].mean() for c in ISSUES],
-        "People ≥ threshold": [int(filtered[c].ge(issue_threshold).sum()) for c in ISSUES],
-        "% ≥ threshold": [filtered[c].ge(issue_threshold).mean()*100 for c in ISSUES],
+        "High or Very High (%)": [filtered[c].ge(60).mean()*100 for c in ISSUES]
     }).sort_values("Mean Score", ascending=False)
 
-    st.dataframe(main_issue.round(1), use_container_width=True, hide_index=True)
-    fig = px.bar(
-        main_issue, x="Issue", y="Mean Score", text_auto=".1f",
-        title="Issue Scores — Whole Selected Church / Community"
-    )
-    fig.update_yaxes(range=[0, 100], title="Score (0–100)")
+    st.dataframe(prevalence.round(1), use_container_width=True, hide_index=True)
+
+    fig = px.bar(prevalence, x="Issue", y="Mean Score", text_auto=".1f",
+                 title="Average Problem Score (0–100)")
+    fig.update_yaxes(range=[0, 100])
     st.plotly_chart(fig, use_container_width=True)
 
-    # B. Issue × Issue
-    st.markdown("### 2️⃣ Issue × Issue")
-    issue_corr = filtered[ISSUES].corr()
-    fig = px.imshow(
-        issue_corr, text_auto=".2f", zmin=-1, zmax=1,
-        title="Issue × Issue Relationship"
-    )
-    st.plotly_chart(fig, use_container_width=True)
-    st.caption("Association only; correlation does not establish causation.")
-
-    # C. Age × Issue
-    st.markdown("### 3️⃣ Age × Issue")
-    if "Q1" in filtered.columns:
-        age_issue = filtered.groupby("Q1")[ISSUES].mean().round(1)
-        st.dataframe(age_issue, use_container_width=True)
-        age_long = age_issue.reset_index().melt(
-            id_vars=["Q1"], value_vars=ISSUES,
-            var_name="Issue", value_name="Score"
-        )
-        fig = px.bar(
-            age_long, x="Q1", y="Score", color="Issue",
-            barmode="group", text_auto=".0f",
-            title="Age Group × Issue"
-        )
-        fig.update_yaxes(range=[0, 100], title="Mean Score")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Q1 Age Group is not available.")
-
-    # D. Life Stage × Issue
-    st.markdown("### 4️⃣ Life Stage × Issue")
-    if "Q2" in filtered.columns:
-        stage_issue = filtered.groupby("Q2")[ISSUES].mean().round(1)
-        st.dataframe(stage_issue, use_container_width=True)
-        stage_long = stage_issue.reset_index().melt(
-            id_vars=["Q2"], value_vars=ISSUES,
-            var_name="Issue", value_name="Score"
-        )
-        fig = px.bar(
-            stage_long, x="Q2", y="Score", color="Issue",
-            barmode="group", text_auto=".0f",
-            title="Life Stage × Issue"
-        )
-        fig.update_yaxes(range=[0, 100], title="Mean Score")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Q2 Life Stage is not available.")
-
-    # E. Compare up to two smaller groups
-    st.markdown("### 5️⃣ Compare Groups")
-    st.caption(
-        "Select a dimension and up to two groups to compare their issue profiles. "
-        "This is descriptive comparison, not a ranking."
-    )
-
-    compare_candidates = []
-    for label, aliases in [
-        ("Age Group", ["Q1"]),
-        ("Life Stage", ["Q2"]),
-        ("Country", ["Country"]),
-        ("Region / State", ["Region", "State"]),
-        ("District", ["District"]),
-        ("Community", ["Community_ID"]),
-        ("Church", ["Church_ID"]),
-        ("Urban / Rural", ["Urban_Rural", "Urban/Rural", "Urban Rural"]),
-        ("Community Participation", ["Community Participation", "Community_Participation"]),
-        ("Spiritual Stage", ["Spiritual Stage", "Spiritual_Stage"]),
-    ]:
-        found = _find_column(filtered, aliases)
-        if found and filtered[found].dropna().nunique() >= 2:
-            compare_candidates.append((label, found))
-
-    if compare_candidates:
-        compare_label = st.selectbox(
-            "Compare by",
-            [x[0] for x in compare_candidates],
-            key="main_compare_dimension"
-        )
-        compare_col = dict(compare_candidates)[compare_label]
-        compare_values = sorted(
-            filtered[compare_col].dropna().astype(str).unique().tolist()
-        )
-        selected_groups = st.multiselect(
-            f"Select up to 2 {compare_label} groups",
-            compare_values,
-            max_selections=2,
-            key="main_compare_groups"
-        )
-
-        if len(selected_groups) == 0:
-            st.info("Select one or two groups to see their issue profiles.")
-        else:
-            comp_rows = []
-            for group in selected_groups:
-                mask = filtered[compare_col].astype(str) == group
-                subset = filtered.loc[mask]
-                row = {"Group": group, "People": len(subset)}
-                for issue in ISSUES:
-                    row[issue] = float(subset[issue].mean()) if len(subset) else float("nan")
-                comp_rows.append(row)
-
-            comp_df = pd.DataFrame(comp_rows)
-            st.dataframe(comp_df.round(1), use_container_width=True, hide_index=True)
-
-            comp_long = comp_df.melt(
-                id_vars=["Group", "People"],
-                value_vars=ISSUES,
-                var_name="Issue",
-                value_name="Score"
-            )
-            fig_compare = px.bar(
-                comp_long,
-                x="Issue",
-                y="Score",
-                color="Group",
-                barmode="group",
-                text_auto=".1f",
-                title=f"{compare_label} — Issue Comparison"
-            )
-            fig_compare.update_yaxes(range=[0, 100], title="Mean Score (0–100)")
-            st.plotly_chart(fig_compare, use_container_width=True)
-
-            if len(selected_groups) == 2:
-                g1, g2 = selected_groups
-                n1 = int((filtered[compare_col].astype(str) == g1).sum())
-                n2 = int((filtered[compare_col].astype(str) == g2).sum())
-                st.caption(
-                    f"Comparison: **{g1} (n={n1})** vs **{g2} (n={n2})**. "
-                    "Differences are descriptive; check sample sizes and context before interpretation."
-                )
-    else:
-        st.info("No comparable grouping fields with at least two groups are available.")
-
-    # F. Top combinations
-    st.markdown("### 6️⃣ Top Problem Combinations")
-    main_combos = top_combinations(filtered, threshold=issue_threshold, max_size=3)
-    if main_combos.empty:
-        st.info("No issue combinations meet the ≥50 threshold.")
-    else:
-        st.dataframe(main_combos.head(10), use_container_width=True, hide_index=True)
-        fig = px.bar(
-            main_combos.head(10),
-            x="Number of People", y="Combination",
-            orientation="h", text_auto=True,
-            title="Most Frequent Issue Combinations"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    # F. Q41/Q42 themes
-    st.markdown("### 7️⃣ What People Are Saying")
-    q41_main = _text_themes(filtered, "Q41")
-    q42_main = _text_themes(filtered, "Q42")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**Q41 — Significant Challenge Themes**")
-        if q41_main.empty:
-            st.info("No Q41 responses available.")
-        else:
-            st.dataframe(q41_main, use_container_width=True, hide_index=True)
-            fig = px.bar(
-                q41_main, x="Responses", y="Theme",
-                orientation="h", text_auto=True,
-                title="Q41 Themes"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-    with c2:
-        st.markdown("**Q42 — Requested Support Themes**")
-        if q42_main.empty:
-            st.info("No Q42 responses available.")
-        else:
-            st.dataframe(q42_main, use_container_width=True, hide_index=True)
-            fig = px.bar(
-                q42_main, x="Responses", y="Theme",
-                orientation="h", text_auto=True,
-                title="Q42 Themes"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-    st.caption(
-        "Score bands are provisional for this prototype. The main dashboard is an "
-        "overview; use the detailed tabs for drill-down and traceability to respondents."
-    )
+    st.caption("Score bands are provisional for this prototype: <40 Low, 40–59 Moderate, 60–74 High, 75–100 Very High.")
 
 # 2 Issue Analysis
 with tabs[1]:
@@ -1717,30 +1434,20 @@ with tabs[9]:
 
 # 11 Pattern Worksheet Answers
 with tabs[10]:
-    st.subheader("📝 Church / Community Pattern Discovery — Complete Answers")
+    st.subheader("📝 Church Pattern Discovery — Complete Answers")
     st.caption(
         "Steps 1–6 are calculated from the selected respondents; Steps 7–8 are "
         "evidence-based drafts for leader validation and discernment."
     )
-    scope_label = (
-        "All Communities (whole church/community population)"
-        if selected_community == "All Communities"
-        else _church_display_name(df, selected_community)
-    )
-    st.info(f"**Current Church / Community scope:** {scope_label}")
-    if selected_community != "All Communities" and _church_name_column(df) is None:
-        st.warning(
-            "The uploaded dataset does not contain a Church Name / Community Name field. "
-            "The dashboard therefore shows the Community_ID and available location information "
-            "instead of inventing a church name."
-        )
-    st.caption(
-        f"Pattern threshold: **{issue_threshold}/100**. All threshold-based "
-        "counts, combinations and group analysis below use this value."
-    )
+    st.info(f"**Current Church / Community:** {selected_community}")
 
-    if filtered.empty:
-        st.warning("No respondents are available for the selected church/community scope.")
+    if selected_community == "All Communities":
+        st.warning(
+            "For a true Church Pattern Discovery answer, select a specific "
+            "Church / Community in the sidebar."
+        )
+    elif filtered.empty:
+        st.warning("No respondents are available for the selected church/community.")
     else:
         worksheet = filtered.copy()
 
@@ -1748,29 +1455,16 @@ with tabs[10]:
         issue_summary = pd.DataFrame({
             "Issue": ISSUES,
             "Mean Score": [worksheet[c].mean() for c in ISSUES],
-            "People ≥ threshold": [int(worksheet[c].ge(issue_threshold).sum()) for c in ISSUES],
-            "% ≥ threshold": [worksheet[c].ge(issue_threshold).mean() * 100 for c in ISSUES],
+            "People ≥50": [int(worksheet[c].ge(50).sum()) for c in ISSUES],
+            "% ≥50": [worksheet[c].ge(50).mean() * 100 for c in ISSUES],
         }).sort_values("Mean Score", ascending=False).reset_index(drop=True)
 
         top3 = issue_summary.head(3)
-        st.markdown(f"### STEP 1 — What are our top issues?  •  Threshold: {issue_threshold}")
+        st.markdown("### STEP 1 — What are our top issues?")
         st.dataframe(top3.round(1), use_container_width=True, hide_index=True)
 
         top_issue = str(top3.iloc[0]["Issue"])
         top3_names = top3["Issue"].tolist()
-
-        with st.expander("👤 View / download people behind a top issue"):
-            selected_issue_for_export = st.selectbox(
-                "Select issue",
-                top3_names,
-                key="worksheet_issue_people_export"
-            )
-            _issue_people_export(
-                worksheet,
-                selected_issue_for_export,
-                issue_threshold,
-                "worksheet_issue_people"
-            )
 
         # Visual: top issue comparison
         st.markdown("#### 📊 Top Issues")
@@ -1785,8 +1479,8 @@ with tabs[10]:
         st.plotly_chart(fig_top, use_container_width=True)
 
         # STEP 2 — What occurs together?
-        st.markdown(f"### STEP 2 — What occurs together?  •  Threshold: {issue_threshold}")
-        combo = top_combinations(worksheet, threshold=issue_threshold, max_size=3)
+        st.markdown("### STEP 2 — What occurs together?")
+        combo = top_combinations(worksheet, threshold=50, max_size=3)
         top_combo = combo.head(10)
         if top_combo.empty:
             st.info("No issue combinations meet the ≥50 threshold.")
@@ -1794,31 +1488,6 @@ with tabs[10]:
         else:
             st.dataframe(top_combo, use_container_width=True, hide_index=True)
             combo_text = str(top_combo.iloc[0]["Combination"])
-
-        with st.expander("👤 View / download people behind a combination"):
-            if not top_combo.empty:
-                combo_options = top_combo["Combination"].astype(str).tolist()
-                selected_combo_for_export = st.selectbox(
-                    "Select combination",
-                    combo_options,
-                    key="worksheet_combo_people_export"
-                )
-                combo_parts = [
-                    p.strip() for p in selected_combo_for_export.split(" + ")
-                    if p.strip()
-                ]
-                if combo_parts:
-                    mask = pd.Series(True, index=worksheet.index)
-                    for issue_name in combo_parts:
-                        if issue_name in worksheet.columns:
-                            mask &= worksheet[issue_name].ge(issue_threshold)
-                    combo_people = worksheet.loc[mask].copy()
-                    show_people_export(
-                        combo_people,
-                        title=f"People behind: {selected_combo_for_export}",
-                        key="worksheet_combo_people",
-                        show_table=True
-                    )
 
         # Visual: combination frequency
         if not top_combo.empty:
@@ -1833,8 +1502,8 @@ with tabs[10]:
             st.plotly_chart(fig_combo, use_container_width=True)
 
         # STEP 3 — Who experiences it?
-        st.markdown(f"### STEP 3 — Who experiences it?  •  Threshold: {issue_threshold}")
-        group_results = _strongest_group(worksheet, top_issue, threshold=issue_threshold)
+        st.markdown("### STEP 3 — Who experiences it?")
+        group_results = _strongest_group(worksheet, top_issue, threshold=50)
         if group_results.empty:
             st.info("No usable demographic/context grouping columns were found.")
             strongest_group_text = "No group available"
@@ -1850,42 +1519,7 @@ with tabs[10]:
                 f"({int(best_group['People'])} people; "
                 f"{best_group['% of Group']:.1f}% of that group)"
             )
-            st.success(
-                f"Highest threshold concentration: **{strongest_group_text}**"
-            )
-
-            with st.expander("👤 View / download people in a selected group"):
-                selected_dimension = st.selectbox(
-                    "Dimension",
-                    group_results["Dimension"].drop_duplicates().tolist(),
-                    key="worksheet_group_dimension_export"
-                )
-                available_groups = group_results.loc[
-                    group_results["Dimension"] == selected_dimension, "Group"
-                ].astype(str).tolist()
-                selected_group = st.selectbox(
-                    "Group",
-                    available_groups,
-                    key="worksheet_group_export"
-                )
-                dim_aliases = {
-                    "Age Group": ["Q1"],
-                    "Life Stage": ["Q2"],
-                    "Community Participation": ["Community Participation", "Community_Participation", "CommunityParticipation"],
-                    "Spiritual Stage": ["Spiritual Stage", "Spiritual_Stage", "SpiritualStage"],
-                    "Urban / Rural": ["Urban_Rural", "Urban/Rural", "Urban Rural"],
-                }
-                group_col = _find_column(worksheet, dim_aliases.get(selected_dimension, []))
-                if group_col:
-                    group_people = worksheet[
-                        worksheet[group_col].astype(str) == selected_group
-                    ].copy()
-                    show_people_export(
-                        group_people,
-                        title=f"People in {selected_dimension}: {selected_group}",
-                        key="worksheet_group_people",
-                        show_table=True
-                    )
+            st.success(f"Strongest observed group: **{strongest_group_text}**")
 
             # Visual: strongest demographic/context groups
             fig_group = px.bar(
@@ -1899,80 +1533,6 @@ with tabs[10]:
             )
             fig_group.update_xaxes(range=[0, 100], title="% meeting threshold")
             st.plotly_chart(fig_group, use_container_width=True)
-
-        # Optional two-group comparison for the selected church/community.
-        st.markdown("### 🔎 Optional — Compare Two Groups")
-        st.caption(
-            "Compare up to two groups within the current church/community scope "
-            "to understand how the top issue varies."
-        )
-        compare_candidates_ws = []
-        for label, aliases in [
-            ("Age Group", ["Q1"]),
-            ("Life Stage", ["Q2"]),
-            ("Country", ["Country"]),
-            ("Region / State", ["Region", "State"]),
-            ("District", ["District"]),
-            ("Community", ["Community_ID"]),
-            ("Church", ["Church_ID"]),
-            ("Urban / Rural", ["Urban_Rural", "Urban/Rural", "Urban Rural"]),
-            ("Community Participation", ["Community Participation", "Community_Participation"]),
-                ("Spiritual Stage", ["Spiritual Stage", "Spiritual_Stage"]),
-        ]:
-            found = _find_column(worksheet, aliases)
-            if found and worksheet[found].dropna().nunique() >= 2:
-                compare_candidates_ws.append((label, found))
-
-        if compare_candidates_ws:
-            compare_label_ws = st.selectbox(
-                "Compare by",
-                [x[0] for x in compare_candidates_ws],
-                key="worksheet_compare_dimension"
-            )
-            compare_col_ws = dict(compare_candidates_ws)[compare_label_ws]
-            values_ws = sorted(
-                worksheet[compare_col_ws].dropna().astype(str).unique().tolist()
-            )
-            selected_groups_ws = st.multiselect(
-                f"Select up to 2 {compare_label_ws} groups",
-                values_ws,
-                max_selections=2,
-                key="worksheet_compare_groups"
-            )
-            if selected_groups_ws:
-                rows_ws = []
-                for group in selected_groups_ws:
-                    sub = worksheet[worksheet[compare_col_ws].astype(str) == group]
-                    rows_ws.append({
-                        "Group": group,
-                        "People": len(sub),
-                        "Top Issue Score": round(float(sub[top_issue].mean()), 1) if len(sub) else float("nan"),
-                        "People ≥ threshold": int(sub[top_issue].ge(issue_threshold).sum()) if len(sub) else 0,
-                        "% ≥ threshold": round(float(sub[top_issue].ge(issue_threshold).mean() * 100), 1) if len(sub) else 0.0,
-                    })
-                ws_comp_df = pd.DataFrame(rows_ws)
-                st.dataframe(ws_comp_df, use_container_width=True, hide_index=True)
-                ws_comp_long = []
-                for group in selected_groups_ws:
-                    sub = worksheet[worksheet[compare_col_ws].astype(str) == group]
-                    for issue in top3_names:
-                        ws_comp_long.append({
-                            "Group": group,
-                            "Issue": issue,
-                            "Score": float(sub[issue].mean()) if len(sub) else float("nan")
-                        })
-                ws_comp_long = pd.DataFrame(ws_comp_long)
-                fig_ws_compare = px.bar(
-                    ws_comp_long,
-                    x="Issue",
-                    y="Score",
-                    color="Group",
-                    barmode="group",
-                    text_auto=".1f",
-                    title=f"{compare_label_ws} — Top Issue Comparison"
-                )
-                fig_ws_compare.update_yaxes(range=[0, 100], title="Mean Score (0–100)")
-                st.plotly_chart(fig_ws_compare, use_container_width=True)
 
         # STEP 4 — Where does it occur?
         st.markdown("### STEP 4 — Where does it occur?")
@@ -2078,14 +1638,9 @@ with tabs[10]:
             strongest_group_text if strongest_group_text != "No group available"
             else "the available respondent population"
         )
-        scope_name = (
-            "the whole church/community population"
-            if selected_community == "All Communities"
-            else f"the Church / Community {selected_community}"
-        )
         if combo_text:
             pattern_statement = (
-                f"Among respondents in {scope_name}, "
+                f"Among respondents in {selected_community}, "
                 f"{combo_text} frequently occur together. "
                 f"This is particularly visible in {group_sentence}. "
                 f"Survey questions {top_supporting_qs} provide additional evidence, "
@@ -2093,7 +1648,7 @@ with tabs[10]:
             )
         else:
             pattern_statement = (
-                f"Among respondents in {scope_name}, "
+                f"Among respondents in {selected_community}, "
                 f"{top_issue} is the highest observed need area. "
                 f"This is particularly visible in {group_sentence}. "
                 f"Survey questions {top_supporting_qs} provide additional evidence, "
@@ -2134,8 +1689,8 @@ with tabs[10]:
                 "Item": row["Issue"],
                 "Evidence": (
                     f"Mean={row['Mean Score']:.1f}; "
-                    f"People≥threshold={int(row['People ≥ threshold'])}; "
-                    f"%≥threshold={row['% ≥ threshold']:.1f}%"
+                    f"People≥50={int(row['People ≥50'])}; "
+                    f"%≥50={row['% ≥50']:.1f}%"
                 )
             })
         for _, row in top_combo.iterrows():
